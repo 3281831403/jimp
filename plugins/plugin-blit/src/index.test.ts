@@ -70,3 +70,48 @@ describe("Blit over image", function () {
     ).toMatchSnapshot();
   });
 });
+
+describe("Blit alpha compositing", () => {
+  function solidImage(rgba: number) {
+    const data = Buffer.alloc(4);
+    data.writeUInt32BE(rgba >>> 0, 0);
+
+    return Jimp.fromBitmap({ width: 1, height: 1, data });
+  }
+
+  const halfWhite = () => solidImage(0xffffff80);
+
+  test("half-transparent source keeps its color and alpha on an empty canvas", () => {
+    const out = solidImage(0x00000000).blit({ src: halfWhite() });
+
+    // same result as Jimp#composite: (255, 255, 255, 128)
+    expect([...out.bitmap.data]).toEqual([255, 255, 255, 128]);
+  });
+
+  test("stacking two half-transparent layers composes alpha like composite", () => {
+    const out = solidImage(0x00000000)
+      .blit({ src: halfWhite() })
+      .blit({ src: halfWhite() });
+
+    // src-over: a = 0.5 + 0.5 - 0.25 = 0.75 -> 191, color stays white
+    expect([...out.bitmap.data]).toEqual([255, 255, 255, 191]);
+  });
+
+  test("opaque source is blitted byte-for-byte", () => {
+    const dst = solidImage(0x11223344);
+    const src = solidImage(0xaabbccff);
+
+    dst.blit({ src });
+
+    expect([...dst.bitmap.data]).toEqual([170, 187, 204, 255]);
+  });
+
+  test("fully transparent source leaves the destination untouched", () => {
+    const dst = solidImage(0x11223344);
+    const src = solidImage(0xff000000);
+
+    dst.blit({ src });
+
+    expect([...dst.bitmap.data]).toEqual([17, 34, 51, 68]);
+  });
+});

@@ -22,6 +22,48 @@
  */
 
 export const operations = {
+  /**
+   * Copy the source into a premultiplied-alpha buffer so that the color of
+   * (partially) transparent pixels is weighted by their alpha during
+   * interpolation and can never bleed into visible pixels.
+   * Fully opaque pixels are copied through unchanged.
+   */
+  _premultiplyAlpha(src: any): any {
+    const bufSrc = src.data;
+    const data = Buffer.alloc(bufSrc.length);
+
+    for (let i = 0; i < bufSrc.length; i += 4) {
+      const a = bufSrc[i + 3]!;
+
+      data[i] = Math.round((bufSrc[i]! * a) / 255);
+      data[i + 1] = Math.round((bufSrc[i + 1]! * a) / 255);
+      data[i + 2] = Math.round((bufSrc[i + 2]! * a) / 255);
+      data[i + 3] = a;
+    }
+
+    return { width: src.width, height: src.height, data };
+  },
+
+  /**
+   * Convert a premultiplied-alpha buffer back to straight alpha in place.
+   * Fully opaque pixels are left untouched.
+   */
+  _unpremultiplyAlpha(data: any) {
+    for (let i = 0; i < data.length; i += 4) {
+      const a = data[i + 3]!;
+
+      if (a === 0) {
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+      } else if (a !== 255) {
+        data[i] = Math.min(255, Math.round((data[i]! * 255) / a));
+        data[i + 1] = Math.min(255, Math.round((data[i + 1]! * 255) / a));
+        data[i + 2] = Math.min(255, Math.round((data[i + 2]! * 255) / a));
+      }
+    }
+  },
+
   nearestNeighbor(src: any, dst: any) {
     const wSrc = src.width;
     const hSrc = src.height;
@@ -48,7 +90,11 @@ export const operations = {
     }
   },
 
-  bilinearInterpolation(src: any, dst: any) {
+  bilinearInterpolation(srcOriginal: any, dst: any) {
+    // Interpolate in premultiplied-alpha space so transparent pixels'
+    // colors can't bleed into their visible neighbors.
+    const src = this._premultiplyAlpha(srcOriginal);
+
     const wSrc = src.width;
     const hSrc = src.height;
 
@@ -117,9 +163,15 @@ export const operations = {
         assign(posDst, 3, x, xMin, xMax, y, yMin, yMax);
       }
     }
+
+    this._unpremultiplyAlpha(bufDst);
   },
 
-  _interpolate2D(src: any, dst: any, options?: any, interpolate?: any) {
+  _interpolate2D(srcOriginal: any, dst: any, options?: any, interpolate?: any) {
+    // Interpolate in premultiplied-alpha space so transparent pixels'
+    // colors can't bleed into their visible neighbors.
+    const src = this._premultiplyAlpha(srcOriginal);
+
     const bufSrc = src.data;
     const bufDst = dst.data;
 
@@ -155,14 +207,22 @@ export const operations = {
 
         for (let k = 0; k < 4; k++) {
           const kPos = srcPos + k;
+          // guard the edge fudges against reading out of bounds when the
+          // source is only 1px wide (e.g. 1x1, 1xN strips)
           const x0 =
-            xPos > 0 ? bufSrc[kPos - 4] : 2 * bufSrc[kPos] - bufSrc[kPos + 4];
-          const x1 = bufSrc[kPos];
-          const x2 = bufSrc[kPos + 4];
+            xPos > 0
+              ? bufSrc[kPos - 4]!
+              : wSrc > 1
+                ? 2 * bufSrc[kPos]! - bufSrc[kPos + 4]!
+                : bufSrc[kPos]!;
+          const x1 = bufSrc[kPos]!;
+          const x2 = wSrc > 1 ? bufSrc[kPos + 4]! : bufSrc[kPos]!;
           const x3 =
             xPos < wSrc - 2
-              ? bufSrc[kPos + 8]
-              : 2 * bufSrc[kPos + 4] - bufSrc[kPos];
+              ? bufSrc[kPos + 8]!
+              : wSrc > 1
+                ? 2 * bufSrc[kPos + 4]! - bufSrc[kPos]!
+                : bufSrc[kPos]!;
           buf1[buf1Pos + k] = interpolate(x0, x1, x2, x3, t);
         }
       }
@@ -188,16 +248,22 @@ export const operations = {
         const buf2Pos = (i * wDst2 + j) * 4;
         for (let k = 0; k < 4; k++) {
           const kPos = buf1Pos + k;
+          // guard the edge fudges against reading out of bounds when the
+          // source is only 1px tall (e.g. 1x1, Nx1 strips)
           const y0 =
             yPos > 0
-              ? buf1[kPos - wDst2 * 4]
-              : 2 * buf1[kPos]! - buf1[kPos + wDst2 * 4]!;
-          const y1 = buf1[kPos];
-          const y2 = buf1[kPos + wDst2 * 4];
+              ? buf1[kPos - wDst2 * 4]!
+              : hSrc > 1
+                ? 2 * buf1[kPos]! - buf1[kPos + wDst2 * 4]!
+                : buf1[kPos]!;
+          const y1 = buf1[kPos]!;
+          const y2 = hSrc > 1 ? buf1[kPos + wDst2 * 4]! : buf1[kPos]!;
           const y3 =
             yPos < hSrc - 2
-              ? buf1[kPos + wDst2 * 8]
-              : 2 * buf1[kPos + wDst2 * 4]! - buf1[kPos]!;
+              ? buf1[kPos + wDst2 * 8]!
+              : hSrc > 1
+                ? 2 * buf1[kPos + wDst2 * 4]! - buf1[kPos]!
+                : buf1[kPos]!;
 
           buf2[buf2Pos + k] = interpolate(y0, y1, y2, y3, t);
         }
@@ -207,6 +273,8 @@ export const operations = {
 
     // ===========================================================
     // Pass 3 - scale to dst
+    // buf2 holds premultiplied-alpha pixels: average them weighted by
+    // alpha, then convert back to straight alpha.
     const m = wM * hM;
     if (m > 1) {
       for (let i = 0; i < hDst; i++) {
@@ -216,7 +284,6 @@ export const operations = {
           let g = 0;
           let b = 0;
           let a = 0;
-          let realColors = 0;
 
           for (let y = 0; y < hM; y++) {
             const yPos = i * hM + y;
@@ -224,28 +291,32 @@ export const operations = {
             for (let x = 0; x < wM; x++) {
               const xPos = j * wM + x;
               const xyPos = (yPos * wDst2 + xPos) * 4;
-              const pixelAlpha = buf2[xyPos + 3]!;
 
-              if (pixelAlpha) {
-                r += buf2[xyPos]!;
-                g += buf2[xyPos + 1]!;
-                b += buf2[xyPos + 2]!;
-                realColors++;
-              }
-
-              a += pixelAlpha;
+              r += buf2[xyPos]!;
+              g += buf2[xyPos + 1]!;
+              b += buf2[xyPos + 2]!;
+              a += buf2[xyPos + 3]!;
             }
           }
 
           const pos = (i * wDst + j) * 4;
-          bufDst[pos] = realColors ? Math.round(r / realColors) : 0;
-          bufDst[pos + 1] = realColors ? Math.round(g / realColors) : 0;
-          bufDst[pos + 2] = realColors ? Math.round(b / realColors) : 0;
-          bufDst[pos + 3] = Math.round(a / m);
+
+          if (a) {
+            bufDst[pos] = Math.min(255, Math.round((r * 255) / a));
+            bufDst[pos + 1] = Math.min(255, Math.round((g * 255) / a));
+            bufDst[pos + 2] = Math.min(255, Math.round((b * 255) / a));
+            bufDst[pos + 3] = Math.round(a / m);
+          } else {
+            bufDst[pos] = 0;
+            bufDst[pos + 1] = 0;
+            bufDst[pos + 2] = 0;
+            bufDst[pos + 3] = 0;
+          }
         }
       }
     } else {
-      // replace dst buffer with buf2
+      // replace dst buffer with buf2 (converted back to straight alpha)
+      this._unpremultiplyAlpha(buf2);
       dst.data = buf2;
     }
   },

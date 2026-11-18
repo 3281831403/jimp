@@ -39,6 +39,7 @@ async function detectFileTypeFromBuffer(buffer: Buffer | ArrayBuffer) {
 
 export { getExifOrientation } from "./utils/image-bitmap.js";
 export { composite } from "./utils/composite.js";
+export * as compositeModes from "./utils/composite-modes.js";
 export * from "./utils/constants.js";
 
 export interface RawImageData {

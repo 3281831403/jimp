@@ -1,5 +1,6 @@
 import { JimpClass, JimpClassSchema } from "@jimp/types";
 import { limit255, scan } from "@jimp/utils";
+import { compositeModes } from "@jimp/core";
 import { z } from "zod";
 
 const BlitOptionsSchemaComplex = z.object({
@@ -85,27 +86,29 @@ export const methods = {
         maxHeight - yOffset > 0
       ) {
         const dstIdx = image.getPixelIndex(xOffset, yOffset);
-        const srcColor = {
-          r: src.bitmap.data[idx] || 0,
-          g: src.bitmap.data[idx + 1] || 0,
-          b: src.bitmap.data[idx + 2] || 0,
-          a: src.bitmap.data[idx + 3] || 0,
-        };
 
-        const dst = {
-          r: image.bitmap.data[dstIdx] || 0,
-          g: image.bitmap.data[dstIdx + 1] || 0,
-          b: image.bitmap.data[dstIdx + 2] || 0,
-          a: image.bitmap.data[dstIdx + 3] || 0,
-        };
+        // Blend with the same premultiplied-alpha "src over" compositing
+        // that Jimp#composite uses, so fully transparent pixels never
+        // contribute their color and alpha composes correctly.
+        const blended = compositeModes.srcOver(
+          {
+            r: (src.bitmap.data[idx] || 0) / 255,
+            g: (src.bitmap.data[idx + 1] || 0) / 255,
+            b: (src.bitmap.data[idx + 2] || 0) / 255,
+            a: (src.bitmap.data[idx + 3] || 0) / 255,
+          },
+          {
+            r: (image.bitmap.data[dstIdx] || 0) / 255,
+            g: (image.bitmap.data[dstIdx + 1] || 0) / 255,
+            b: (image.bitmap.data[dstIdx + 2] || 0) / 255,
+            a: (image.bitmap.data[dstIdx + 3] || 0) / 255,
+          },
+        );
 
-        image.bitmap.data[dstIdx] =
-          ((srcColor.a * (srcColor.r - dst.r) - dst.r + 255) >> 8) + dst.r;
-        image.bitmap.data[dstIdx + 1] =
-          ((srcColor.a * (srcColor.g - dst.g) - dst.g + 255) >> 8) + dst.g;
-        image.bitmap.data[dstIdx + 2] =
-          ((srcColor.a * (srcColor.b - dst.b) - dst.b + 255) >> 8) + dst.b;
-        image.bitmap.data[dstIdx + 3] = limit255(dst.a + srcColor.a);
+        image.bitmap.data[dstIdx] = limit255(blended.r * 255);
+        image.bitmap.data[dstIdx + 1] = limit255(blended.g * 255);
+        image.bitmap.data[dstIdx + 2] = limit255(blended.b * 255);
+        image.bitmap.data[dstIdx + 3] = limit255(blended.a * 255);
       }
     });
 
